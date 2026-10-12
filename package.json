@@ -1,0 +1,16 @@
+{
+  "name": "linehub",
+  "version": "0.1.0",
+  "description": "LINE 官方帳號（LINE@）群組訊息收集 PoC：透過 Messaging API Webhook 接收並保存所有群組訊息，供後續應用使用",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/index.js",
+    "simulate": "node scripts/simulate.js",
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/**/*.test.js'"
+  }
+}
