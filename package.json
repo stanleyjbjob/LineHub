@@ -11,6 +11,10 @@
     "start": "node --disable-warning=ExperimentalWarning src/index.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/index.js",
     "simulate": "node scripts/simulate.js",
-    "test": "node --disable-warning=ExperimentalWarning --test 'test/**/*.test.js'"
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/**/*.test.js'",
+    "summarize": "node --disable-warning=ExperimentalWarning scripts/summarize.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0"
   }
 }

@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { verifySignature } from './line/signature.js';
 import { toPublicMessage } from './processors/forward-webhook.js';
+import { localDate } from './summary/time.js';
 
 const PUBLIC_DIR = path.resolve(import.meta.dirname, '../public');
 const MAX_BODY = 5 * 1024 * 1024;
@@ -13,9 +14,9 @@ const MIME = {
   '.jpg': 'image/jpeg', '.png': 'image/png', '.mp4': 'video/mp4', '.m4a': 'audio/mp4',
 };
 
-export function createServer({ config, store, ingestor, bus = new EventEmitter(), logger = console }) {
+export function createServer({ config, store, ingestor, summarizer, bus = new EventEmitter(), logger = console }) {
   const sseClients = new Set();
-  for (const name of ['message', 'unsend', 'alert']) {
+  for (const name of ['message', 'unsend', 'alert', 'summary']) {
     bus.on(name, (data) => {
       const payload = `event: ${name}\ndata: ${JSON.stringify(name === 'message' ? toPublicMessage(data) : data)}\n\n`;
       for (const res of sseClients) res.write(payload);
@@ -47,6 +48,25 @@ export function createServer({ config, store, ingestor, bus = new EventEmitter()
     'GET /api/members': (req, url) => json(200, store.listMembers(url.searchParams.get('sourceId'))),
     'GET /api/alerts': () => json(200, store.listAlerts()),
     'GET /api/events': () => json(200, store.listEvents()),
+    'GET /api/summaries': (req, url) => json(200, {
+      enabled: Boolean(summarizer?.enabled),
+      summaries: store.listSummaries({
+        sourceId: url.searchParams.get('sourceId') || undefined,
+        limit: url.searchParams.get('limit') || undefined,
+      }),
+    }),
+    // 手動產生摘要：{ sourceId?, date?, force?, push? }；未指定 sourceId 則處理當天所有群組
+    'POST /api/summaries/run': async (req) => {
+      if (!summarizer?.enabled) return json(400, { error: '未設定 ANTHROPIC_API_KEY，摘要功能停用' });
+      const raw = await readBody(req);
+      const body = raw.length ? JSON.parse(raw.toString('utf8')) : {};
+      const date = body.date || localDate(Date.now(), config.summaryTz);
+      const opts = { force: Boolean(body.force), push: Boolean(body.push) };
+      const result = body.sourceId
+        ? [await summarizer.summarize(body.sourceId, date, opts)]
+        : await summarizer.runDaily(date, opts);
+      return json(200, { date, results: result });
+    },
     'GET /api/stream': (req, url, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
       res.write(': connected\n\n');

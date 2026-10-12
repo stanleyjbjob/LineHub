@@ -28,5 +28,19 @@ export function readConfig(env = process.env) {
     alertKeywords: list(env.ALERT_KEYWORDS),
     forwardWebhookUrl: env.FORWARD_WEBHOOK_URL || '',
     enableBotCommands: bool(env.ENABLE_BOT_COMMANDS, false),
+    // AI 每日摘要（ANTHROPIC_API_KEY 由 Anthropic SDK 直接讀取）
+    summaryEnabled: bool(env.SUMMARY_ENABLED, Boolean(env.ANTHROPIC_API_KEY)),
+    summaryTime: normalizeTime(env.SUMMARY_TIME || '08:00'),
+    summaryTz: env.SUMMARY_TZ || 'Asia/Taipei',
+    summaryMinMessages: Number(env.SUMMARY_MIN_MESSAGES || 5),
+    summaryModel: env.SUMMARY_MODEL || 'claude-opus-5-5',
+    summaryEffort: env.SUMMARY_EFFORT || 'medium',
+    summaryPushToGroup: bool(env.SUMMARY_PUSH_TO_GROUP, false),
   };
+}
+
+function normalizeTime(v) {
+  const m = String(v).match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) throw new Error(`SUMMARY_TIME 格式應為 HH:mm，收到 ${v}`);
+  return `${m[1].padStart(2, '0')}:${m[2]}`;
 }

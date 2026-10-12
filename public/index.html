@@ -54,6 +54,17 @@
   .alert { color: var(--warn); background: var(--warn-weak); padding: 0 6px; border-radius: 6px; font-size: 12px; }
   .empty { color: var(--muted); padding: 40px 0; text-align: center; }
   .more { display: block; margin: 12px auto; }
+  .sumbar { display: flex; gap: 12px; align-items: center; padding: 8px 0 12px; flex-wrap: wrap; }
+  .sumbar button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  .sumbar button:disabled { opacity: .5; cursor: default; }
+  .hint, .muted { color: var(--muted); }
+  .small { font-size: 12px; margin-top: 8px; }
+  .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+  .summary .head { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .summary .head .who { color: var(--text); font-weight: 600; font-size: 14px; }
+  .summary .overview { margin: 8px 0; }
+  .summary h4 { margin: 10px 0 4px; font-size: 13px; color: var(--accent); }
+  .summary ul { margin: 0; padding-left: 20px; }
   @media (max-width: 720px) {
     main { grid-template-columns: 1fr; grid-template-rows: 180px 1fr; height: auto; min-height: calc(100vh - 53px); }
     aside { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -77,22 +88,25 @@
         <option value="audio">語音</option><option value="file">檔案</option><option value="sticker">貼圖</option>
         <option value="location">位置</option>
       </select>
-      <button id="alertsBtn">關鍵字警示</button>
+      <button id="alertsBtn" data-view="alerts">關鍵字警示</button>
+      <button id="summariesBtn" data-view="summaries">AI 每日摘要</button>
     </div>
     <div id="list"></div>
   </section>
 </main>
 <script>
-const state = { sourceId: '', q: '', type: '', alerts: false, sources: [], oldest: null };
+const state = { sourceId: '', q: '', type: '', view: 'messages', sources: [], oldest: null };
 const $ = (s) => document.querySelector(s);
 const token = () => { try { return localStorage.getItem('linehubToken') || ''; } catch { return ''; } };
 const withToken = (u) => token() ? u + (u.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token()) : u;
 
-async function api(path) {
-  const res = await fetch(withToken(path));
+async function api(path, body) {
+  const res = await fetch(withToken(path), body ? {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  } : undefined);
   if (res.status === 401) {
     const t = prompt('請輸入 ADMIN_TOKEN');
-    if (t) { try { localStorage.setItem('linehubToken', t); } catch {} return api(path); }
+    if (t) { try { localStorage.setItem('linehubToken', t); } catch {} return api(path, body); }
     throw new Error('unauthorized');
   }
   return res.json();
@@ -109,7 +123,7 @@ const typeLabel = { group: '群組', room: '多人聊天', user: '一對一' };
 async function loadStats() {
   const s = await api('/api/stats');
   const box = $('#stats'); box.replaceChildren();
-  [['群組', s.activeGroups], ['使用者', s.users], ['訊息', s.messages], ['警示', s.alerts]].forEach(([k, v]) => {
+  [['群組', s.activeGroups], ['使用者', s.users], ['訊息', s.messages], ['警示', s.alerts], ['摘要', s.summaries]].forEach(([k, v]) => {
     const span = el('span', null, k + ' '); span.append(el('b', null, v)); box.append(span);
   });
 }
@@ -159,7 +173,8 @@ function renderMessage(m, isNew) {
 
 async function loadMessages(append = false) {
   const list = $('#list');
-  if (state.alerts) return loadAlerts();
+  if (state.view === 'alerts') return loadAlerts();
+  if (state.view === 'summaries') return loadSummaries();
   const p = new URLSearchParams({ limit: 50 });
   if (state.sourceId) p.set('sourceId', state.sourceId);
   if (state.q) p.set('q', state.q);
@@ -186,13 +201,70 @@ async function loadAlerts() {
   }
 }
 
+const MOOD = { positive: '正面', neutral: '中性', negative: '負面', mixed: '混合' };
+
+async function loadSummaries() {
+  const list = $('#list'); list.replaceChildren();
+  const p = new URLSearchParams(); if (state.sourceId) p.set('sourceId', state.sourceId);
+  const { enabled, summaries } = await api('/api/summaries?' + p);
+  const bar = el('div', 'sumbar');
+  const run = el('button', null, state.sourceId ? '產生此群組今日摘要' : '產生所有群組今日摘要');
+  run.disabled = !enabled;
+  run.onclick = async () => {
+    run.disabled = true; run.textContent = '摘要產生中…（約數十秒）';
+    try {
+      const r = await api('/api/summaries/run', { sourceId: state.sourceId || undefined, force: true });
+      const errs = (r.results || []).filter((x) => x.error).map((x) => x.error);
+      if (r.error || errs.length) alert(r.error || errs.join('\n'));
+      else if (!r.results.length) alert('今天還沒有訊息數足夠的群組（SUMMARY_MIN_MESSAGES）');
+    } finally { loadSummaries(); }
+  };
+  bar.append(run, el('span', 'hint', enabled ? '排程會每天自動摘要前一天的對話' : '未設定 ANTHROPIC_API_KEY，摘要功能停用'));
+  list.append(bar);
+  if (!summaries.length) return list.append(el('div', 'empty', '尚無摘要。'));
+  for (const s of summaries) list.append(renderSummary(s));
+}
+
+function renderSummary(s) {
+  const c = s.content;
+  const card = el('div', 'summary');
+  const head = el('div', 'head');
+  head.append(el('span', 'who', s.source_name || s.source_id), el('span', null, s.date),
+    el('span', null, `${s.message_count} 則訊息`), el('span', 'tag', '氣氛 ' + (MOOD[c.mood] || c.mood)));
+  if (s.pushed_at) head.append(el('span', 'tag', '已推播到群組'));
+  card.append(head, el('p', 'overview', c.overview));
+  const section = (title, items, fmt) => {
+    if (!items.length) return;
+    card.append(el('h4', null, title));
+    const ul = el('ul'); items.forEach((x) => ul.append(fmt(x))); card.append(ul);
+  };
+  section('主題', c.topics, (t) => {
+    const li = el('li'); li.append(el('b', null, t.title + '：'), t.summary);
+    if (t.participants.length) li.append(el('span', 'muted', ' — ' + t.participants.join('、')));
+    return li;
+  });
+  section('決議', c.decisions, (d) => el('li', null, d));
+  section('待辦事項', c.action_items, (a) => el('li', null,
+    a.task + (a.owner ? `（${a.owner}）` : '') + (a.due ? `　期限：${a.due}` : '')));
+  section('待回覆問題', c.open_questions, (q) => el('li', null, q));
+  card.append(el('div', 'muted small', `${s.model || ''} · 輸入 ${s.input_tokens ?? '-'} / 輸出 ${s.output_tokens ?? '-'} tokens · ${fmtTime(s.created_at)}`));
+  return card;
+}
+
+function setView(view) {
+  state.view = view;
+  document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  loadMessages();
+}
+
 function select(id) {
-  state.sourceId = id; state.alerts = false; $('#alertsBtn').classList.remove('active');
+  state.sourceId = id;
+  if (state.view === 'alerts') { state.view = 'messages'; $('#alertsBtn').classList.remove('active'); }
   loadSources(); loadMessages();
 }
 
 function matchesFilter(m) {
-  if (state.alerts) return false;
+  if (state.view !== 'messages') return false;
   if (state.sourceId && m.source.id !== state.sourceId) return false;
   if (state.type && m.type !== state.type) return false;
   if (state.q && !(m.text || '').includes(state.q)) return false;
@@ -214,6 +286,7 @@ function connect() {
     refreshSide();
   });
   es.addEventListener('alert', refreshSide);
+  es.addEventListener('summary', () => { if (state.view === 'summaries') loadSummaries(); });
   es.addEventListener('unsend', (e) => {
     const { messageId } = JSON.parse(e.data);
     document.querySelector(`.msg[data-id="${CSS.escape(messageId)}"]`)?.classList.add('unsent');
@@ -223,7 +296,9 @@ function connect() {
 let t;
 $('#q').oninput = (e) => { clearTimeout(t); t = setTimeout(() => { state.q = e.target.value.trim(); loadMessages(); }, 300); };
 $('#type').onchange = (e) => { state.type = e.target.value; loadMessages(); };
-$('#alertsBtn').onclick = () => { state.alerts = !state.alerts; $('#alertsBtn').classList.toggle('active', state.alerts); loadMessages(); };
+document.querySelectorAll('[data-view]').forEach((b) => {
+  b.onclick = () => setView(state.view === b.dataset.view ? 'messages' : b.dataset.view);
+});
 
 Promise.all([loadStats(), loadSources(), loadMessages()]).then(connect);
 </script>

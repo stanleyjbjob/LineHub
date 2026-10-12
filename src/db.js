@@ -56,6 +56,20 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_source_ts ON messages (source_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages (timestamp DESC);
+CREATE TABLE IF NOT EXISTS summaries (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id     TEXT NOT NULL,
+  date          TEXT NOT NULL,            -- 當地日期 YYYY-MM-DD
+  message_count INTEGER NOT NULL,
+  content       TEXT NOT NULL,            -- 結構化摘要 JSON
+  text          TEXT NOT NULL,            -- 排版好的文字（推播 / 顯示用）
+  model         TEXT,
+  input_tokens  INTEGER,
+  output_tokens INTEGER,
+  created_at    INTEGER NOT NULL,
+  pushed_at     INTEGER,
+  UNIQUE (source_id, date)
+);
 CREATE TABLE IF NOT EXISTS alerts (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL,
@@ -214,6 +228,53 @@ export class Store {
       .map((e) => ({ ...e, raw: JSON.parse(e.raw) }));
   }
 
+  // ---------- 每日摘要 ----------
+
+  /** 指定期間內訊息數 >= minMessages 的群組 / 聊天室 */
+  sourcesActiveBetween(start, end, minMessages = 1) {
+    return this.db.prepare(`SELECT s.id, COUNT(m.id) AS message_count FROM sources s
+      JOIN messages m ON m.source_id = s.id
+      WHERE s.type IN ('group', 'room') AND m.unsent = 0 AND m.timestamp >= ? AND m.timestamp < ?
+      GROUP BY s.id HAVING COUNT(m.id) >= ?`).all(start, end, minMessages);
+  }
+
+  messagesBetween(sourceId, start, end) {
+    return this.db.prepare(`SELECT m.*, u.display_name FROM messages m LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.source_id = ? AND m.unsent = 0 AND m.timestamp >= ? AND m.timestamp < ?
+      ORDER BY m.timestamp ASC`).all(sourceId, start, end);
+  }
+
+  upsertSummary(s) {
+    this.db.prepare(`INSERT INTO summaries
+        (source_id, date, message_count, content, text, model, input_tokens, output_tokens, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source_id, date) DO UPDATE SET message_count = excluded.message_count,
+        content = excluded.content, text = excluded.text, model = excluded.model,
+        input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+        created_at = excluded.created_at, pushed_at = NULL`)
+      .run(s.sourceId, s.date, s.messageCount, JSON.stringify(s.content), s.text, s.model ?? null,
+        s.inputTokens ?? null, s.outputTokens ?? null, Date.now());
+    return this.getSummary(s.sourceId, s.date);
+  }
+
+  getSummary(sourceId, date) {
+    const row = this.db.prepare(`SELECT su.*, s.name AS source_name FROM summaries su
+      LEFT JOIN sources s ON s.id = su.source_id WHERE su.source_id = ? AND su.date = ?`).get(sourceId, date);
+    return row ? hydrateSummary(row) : undefined;
+  }
+
+  listSummaries({ sourceId, limit = 30 } = {}) {
+    const args = sourceId ? [sourceId] : [];
+    return this.db.prepare(`SELECT su.*, s.name AS source_name FROM summaries su
+      LEFT JOIN sources s ON s.id = su.source_id
+      ${sourceId ? 'WHERE su.source_id = ?' : ''}
+      ORDER BY su.date DESC, su.id DESC LIMIT ?`).all(...args, Math.min(Number(limit) || 30, 200)).map(hydrateSummary);
+  }
+
+  markSummaryPushed(id) {
+    this.db.prepare('UPDATE summaries SET pushed_at = ? WHERE id = ?').run(Date.now(), id);
+  }
+
   stats() {
     const one = (sql) => Object.values(this.db.prepare(sql).get())[0];
     return {
@@ -223,12 +284,17 @@ export class Store {
       messages: one('SELECT COUNT(*) FROM messages'),
       events: one('SELECT COUNT(*) FROM events'),
       alerts: one('SELECT COUNT(*) FROM alerts'),
+      summaries: one('SELECT COUNT(*) FROM summaries'),
     };
   }
 }
 
 export function sourceIdOf(source = {}) {
   return source.groupId || source.roomId || source.userId || null;
+}
+
+function hydrateSummary(row) {
+  return { ...row, content: JSON.parse(row.content) };
 }
 
 function hydrateMessage(row) {
